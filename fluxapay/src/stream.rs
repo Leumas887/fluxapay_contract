@@ -181,8 +181,6 @@ pub enum StreamError {
     InvalidPayeeShares = 18,
     /// Issue #831: Requested stream is not a multi-payee stream.
     NotMultiStream = 19,
-    /// Stream fee in basis points exceeds the maximum allowed (10_000).
-    InvalidFeeBps = 20,
 }
 
 /// Issue #627: Maximum number of stream IDs accepted by `bulk_bump_stream_ttls`
@@ -237,16 +235,14 @@ fn get_stream_fee_recipient(env: &Env) -> Option<Address> {
         .get(&StreamDataKey::StreamFeeRecipient)
 }
 
-/// Maximum allowed stream fee in basis points (100%).
-/// Guards against `apply_fee` producing a negative net amount, which would
-/// panic every withdrawal platform-wide.
-pub const MAX_STREAM_FEE_BPS: i128 = 10_000;
-
 /// Compute fee and net amounts: returns (fee, net).
 fn apply_fee(amount: i128, fee_bps: i128) -> (i128, i128) {
     if fee_bps <= 0 {
         return (0, amount);
     }
+    // Defensive clamp: fee_bps is validated at the setter, but guard here too
+    // so a corrupt/legacy stored value can never produce a negative `net`.
+    let fee_bps = fee_bps.min(10_000);
     let fee = amount * fee_bps / 10_000;
     (fee, amount - fee)
 }
@@ -323,8 +319,8 @@ impl PaymentStreaming {
     /// Set the platform fee in basis points applied to stream withdrawals.
     /// Admin auth is enforced by the caller (PaymentProcessor).
     pub fn set_stream_fee_bps(env: Env, fee_bps: i128) -> Result<(), StreamError> {
-        if fee_bps < 0 || fee_bps > MAX_STREAM_FEE_BPS {
-            return Err(StreamError::InvalidFeeBps);
+        if !(0..=10_000).contains(&fee_bps) {
+            return Err(StreamError::InvalidRate);
         }
         env.storage()
             .persistent()
